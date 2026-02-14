@@ -1,64 +1,65 @@
-#Hacer conexiones
-import requests
-#Administrar archivos Json
-import json
-#importar solo una parte de la biblioteca shapely.geometry (crear un shape)
-from shapely.geometry import shape, mapping
-#importar fastapi
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+import requests
+import json
+import os
+from shapely.geometry import shape
 
+app = FastAPI()
 
-app= FastAPI()
-
-#CORS: Habilitar peticiones desde clientes que no están en mi dominio
-
+# Permitir conexión con el frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["*"],
-    allow_credentials = True,
-    allow_methods = ["*"],
-    allow_headers = ["*"]
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-@app.get("/chapinero")
-def consultar_chapinero():
 
-# Cargar el archivo GeoJSON con los boundaries (debe subirse un poligono en formato Json para crear el área de busqueda)
-    with open("chapinero.geojson", "r", encoding="utf-8") as f:
+@app.get("/localidad/{nombre}")
+def consultar_localidad(nombre: str):
+
+    archivo = f"{nombre.lower()}.geojson"
+
+    if not os.path.exists(archivo):
+        return {"error": f"No existe el archivo {archivo}"}
+
+    # Leer GeoJSON de la localidad
+    with open(archivo, "r", encoding="utf-8") as f:
         geojson_data = json.load(f)
 
-# Obtener la geometría del primer feature (geometria del json)
-    geometry = geojson_data["features"][0]["geometry"]
-    polygon = shape(geometry)
-    print(polygon)
+    # Obtener bounding box
+    geometria = shape(geojson_data["features"][0]["geometry"])
+    minx, miny, maxx, maxy = geometria.bounds
 
-# Extraer bounding box (xmin, ymin, xmax, ymax) (extrae las coordenadas para crear el bbox)
-    xmin, ymin, xmax, ymax = polygon.bounds
-
-# Construir la URL de la consulta al servicio ArcGIS REST
+    # URL real del servicio de árboles de Bogotá
     url = "https://geoportal.jbb.gov.co/agc/rest/services/JBB/CensoArbol_v0/MapServer/0/query"
 
-#Diccionario (Estructura de llave valor)
     params = {
         "where": "1=1",
-        "geometry": f"{xmin},{ymin},{xmax},{ymax}",
+        "geometry": f"{minx},{miny},{maxx},{maxy}",
         "geometryType": "esriGeometryEnvelope",
-        "spatialRel": "esriSpatialRelIntersects",
         "inSR": 4326,
-        "outSR":4326,
+        "outSR": 4326,
+        "spatialRel": "esriSpatialRelIntersects",
         "outFields": "*",
+        "returnGeometry": "true",
         "f": "json"
     }
 
-    print
-
-# Hacer la solicitud (get se utiliza para solicitar datos)
     response = requests.get(url, params=params)
 
-    # Guardar el resultado si la solicitud fue exitosa (el with se utiliza como un gestor de condiciones)
-    if response.status_code == 200:
-        with open("censo_arboles.geojson", "w", encoding="utf-8") as f:
-            f.write(response.text)
-        print("Datos guardados en censo_arboles.json")
-    else:
-        print("Error al descargar los datos:", response.status_code)
+    if response.status_code != 200:
+        return {"error": "Error consultando ArcGIS"}
+
+    data = response.json()
+
+    # Descargar directamente como archivo
+    return Response(
+        content=json.dumps(data),
+        media_type="application/geo+json",
+        headers={
+            "Content-Disposition": f"attachment; filename=arboles_{nombre}.geojson"
+        }
+    )
